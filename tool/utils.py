@@ -1,9 +1,6 @@
 import os
 from random import randint
 
-from libraries.extractor.extractor import Extractor
-
-
 MAX_THREADS = 3
 N_TYPE_DATA_KEYS = 4
 DEFAULT_LOG_PATH = "/tmp/Karonte.txt_" + str(randint(1, 100))
@@ -18,6 +15,16 @@ def unpack_firmware(fw_path, out_dir):
     :param out_dir: the directory to extract to
     :return: the path of the unpacked firmware, which is stored in the brand folder
     """
+    try:
+        from libraries.extractor.extractor import Extractor
+    except ModuleNotFoundError as exc:
+        if exc.name == 'binwalk':
+            raise RuntimeError(
+                "Binwalk is required to extract raw firmware images. "
+                "Install Binwalk or provide an already-extracted firmware directory."
+            ) from exc
+        raise
+
     input_file = fw_path
 
     # arguments for the extraction
