@@ -433,6 +433,8 @@ class BinaryDependencyGraph:
                     if pl not in (semantic.Semantic, setter_getter.SetterGetter):
                         self._core_taint.stop_run()
                         break
+            except TimeOutException:
+                raise
             except Exception as e:
                 log.warning(f"Exception CPF {pl.name}: {e}")
                 pass
