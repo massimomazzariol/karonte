@@ -87,7 +87,7 @@ def get_arguments_call_with_instruction_address(p, b_addr):
     set_params = []
     b = p.factory.block(b_addr)
     for reg_name in arg_reg_names(p):
-        put_stmts = [s for s in b.vex.statements if s.tag == 'Ist_Put' and p.arch.register_names[s.offset] == reg_name]
+        put_stmts = [s for s in b.vex.statements if s.tag == 'Ist_Put' and p.arch.register_names.get(s.offset) == reg_name]
         if not put_stmts:
             break
 
@@ -118,7 +118,7 @@ def get_ord_arguments_call(p, b_addr):
     set_params = []
     b = p.factory.block(b_addr)
     for reg_name in arg_reg_names(p):
-        put_stmts = [s for s in b.vex.statements if s.tag == 'Ist_Put' and p.arch.register_names[s.offset] == reg_name]
+        put_stmts = [s for s in b.vex.statements if s.tag == 'Ist_Put' and p.arch.register_names.get(s.offset) == reg_name]
         if not put_stmts:
             break
 
