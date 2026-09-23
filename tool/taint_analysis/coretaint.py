@@ -417,6 +417,68 @@ class CoreTaint:
         concs = state.solver.eval_upto(cnt, 50, extra_constraints=extra_constraints)
         return random.choice(concs)
 
+    def _get_concretization_key(self, value):
+        """
+        Build a stable concretization key without rendering Claripy ASTs
+        to text.
+
+        Preserve Karonte legacy normalization for BVS unique ids and use
+        Claripy structural hashes for other ASTs.
+        """
+
+        if (
+            getattr(value, "symbolic", False)
+            and getattr(value, "op", None) == "BVS"
+        ):
+            args = getattr(value, "args", ())
+
+            if args and isinstance(args[0], str):
+                name = args[0]
+
+                if "_" in name and not self.is_tainted(value):
+                    parts = name.split("_")
+
+                    if (
+                        len(parts) >= 2
+                        and parts[-2].isdigit()
+                    ):
+                        return (
+                            "_".join(parts[:-2])
+                            + "_"
+                            + parts[-1]
+                        )
+
+                return name
+
+        ast_hash = getattr(value, "hash", None)
+
+        if callable(ast_hash):
+            return (
+                "claripy",
+                ast_hash(),
+            )
+
+        if isinstance(
+            value,
+            (
+                str,
+                bytes,
+                int,
+                float,
+                bool,
+                type(None),
+            ),
+        ):
+            return (
+                "literal",
+                value,
+            )
+
+        return (
+            "object",
+            id(value),
+        )
+
     def _get_target_concretization(self, var, state):
         """
         Concretization must be done carefully in order to perform
@@ -442,25 +504,6 @@ class CoreTaint:
         :return: concretization value
         """
 
-        def get_key_cnt(x):
-            # angr by default create a unique id for every new symbolic variable.
-            # as in karonte we often have to copy the state, step and check some
-            # quantities before step() with the current state, two identical variables might assume
-            # two different names. Therefore, we should not consider the unique _id_ added to symbolic variables
-            # created by angr
-            ret = str(x)
-            if '_' in ret and not self.is_tainted(x):
-                splits = ret.split('_')
-                idx = splits[-2]
-
-                if not idx.isdigit():
-                    log.error(f"get_key_cnt: Symbolic ID parsing failed, using the whole id: {ret}")
-                    return ret
-
-                ret = '_'.join(splits[:-2]) + '_'
-                ret += '_'.join(splits[-1:])
-            return ret
-
         # chek if unconstrained
         state_cp = state.copy()
         se = state_cp.solver
@@ -472,7 +515,7 @@ class CoreTaint:
             if not se.solution(var, conc):
                 conc = se.eval(var)
 
-            key_cnt = get_key_cnt(var)
+            key_cnt = self._get_concretization_key(var)
             self._concretizations[key_cnt] = conc
             return conc
 
@@ -480,7 +523,7 @@ class CoreTaint:
         for cnt in leafs:
             # concretize all unconstrained children
             if cnt.symbolic:
-                key_cnt = get_key_cnt(cnt)
+                key_cnt = self._get_concretization_key(cnt)
                 # first check whether the value is already constrained
                 if key_cnt in self._concretizations.keys():
                     conc = self._concretizations[key_cnt]
