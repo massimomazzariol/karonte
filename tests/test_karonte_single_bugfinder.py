@@ -4,14 +4,30 @@ from types import ModuleType
 from unittest.mock import patch
 
 # Upstream master still imports the firmware extractor eagerly.
-# Stub that unrelated dependency so this regression tests only
-# Karonte orchestration and does not require Binwalk.
-extractor_stub = ModuleType("libraries.extractor.extractor")
+# Temporarily stub that unrelated dependency while importing Karonte,
+# then restore the module state so other tests are not contaminated.
+extractor_module_name = "libraries.extractor.extractor"
+previous_extractor_module = sys.modules.get(extractor_module_name)
+previous_utils_module = sys.modules.get("utils")
+
+extractor_stub = ModuleType(extractor_module_name)
 extractor_stub.Extractor = object
-sys.modules.setdefault("libraries.extractor.extractor", extractor_stub)
+
+if previous_extractor_module is None:
+    sys.modules[extractor_module_name] = extractor_stub
 
 import karonte as karonte_module
 from karonte import Karonte
+
+if previous_extractor_module is None:
+    sys.modules.pop(extractor_module_name, None)
+else:
+    sys.modules[extractor_module_name] = previous_extractor_module
+
+if previous_utils_module is None:
+    sys.modules.pop("utils", None)
+else:
+    sys.modules["utils"] = previous_utils_module
 
 
 class DummyLog:
