@@ -449,8 +449,8 @@ class CoreTaint:
             # two different names. Therefore, we should not consider the unique _id_ added to symbolic variables
             # created by angr
             ret = str(x)
-            if '_' in str(x) and not self.is_tainted(x):
-                splits = str(x).split('_')
+            if '_' in ret and not self.is_tainted(x):
+                splits = ret.split('_')
                 idx = splits[-2]
 
                 if not idx.isdigit():
@@ -478,9 +478,9 @@ class CoreTaint:
 
         # todo why is this constraining a copied state?
         for cnt in leafs:
-            key_cnt = get_key_cnt(cnt)
             # concretize all unconstrained children
             if cnt.symbolic:
+                key_cnt = get_key_cnt(cnt)
                 # first check whether the value is already constrained
                 if key_cnt in self._concretizations.keys():
                     conc = self._concretizations[key_cnt]
