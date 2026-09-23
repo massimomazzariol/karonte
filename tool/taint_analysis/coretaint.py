@@ -237,6 +237,20 @@ class CoreTaint:
     def taint_applied(self):
         return self._taint_applied
 
+    def _contains_taint_marker(self, value):
+        variables = getattr(value, "variables", None)
+
+        if variables is not None:
+            return any(
+                self._taint_buf in name
+                for name in variables
+            )
+
+        if isinstance(value, str):
+            return self._taint_buf in value
+
+        return False
+
     @property
     def p(self):
         return self._p
@@ -255,14 +269,14 @@ class CoreTaint:
         try:
             # estimate the size of the buffer by looking at the buffer contents in memory
             temp_load = state.memory.load(addr, max_size)
-            if self._taint_buf in str(temp_load.args[0]):
+            if self._contains_taint_marker(temp_load.args[0]):
                 # when there is only one thing to load
                 if isinstance(temp_load.args[0], str):
                     return temp_load.length
                 # tainted
                 size = 0
                 for arg in temp_load.args:
-                    if self._taint_buf in str(arg):
+                    if self._contains_taint_marker(arg):
                         size += arg.length
                     else:
                         break
@@ -502,7 +516,7 @@ class CoreTaint:
             return False
 
         # Nothing is tainted
-        if self._taint_buf not in str(var):
+        if not self._contains_taint_marker(var):
             return False
 
         #
@@ -520,7 +534,7 @@ class CoreTaint:
         if not untaint_var_strs:
             return True
 
-        taint_leafs = list(set([l for l in var.recursive_leaf_asts if self._taint_buf in str(l)]))
+        taint_leafs = list(set([l for l in var.recursive_leaf_asts if self._contains_taint_marker(l)]))
         taints = set()
 
         for l in taint_leafs:
