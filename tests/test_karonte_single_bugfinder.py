@@ -47,6 +47,9 @@ class DummyFileLogger:
     def start_logging(self):
         pass
 
+    def save_checkpoint(self, phase, status):
+        pass
+
     def save_alert(self, *args, **kwargs):
         pass
 

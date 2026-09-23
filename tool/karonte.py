@@ -58,30 +58,38 @@ class Karonte:
         """
 
         self._klog.start_logging()
+        self._klog.save_checkpoint("analysis", "start")
 
         bbf = BorderBinariesFinder(self._fw_path, use_connection_mark=False, logger_obj=log)
 
         log.info("Retrieving Border Binaries")
         if not self._border_bins:
+            self._klog.save_checkpoint("border_binary_finder", "start")
             self._border_bins = bbf.run(pickle_file=self._pickle_parsers)
+            self._klog.save_checkpoint("border_binary_finder", "complete")
             if not self._border_bins:
                 log.error("No border binaries found, exiting...")
                 log.info(f"Finished, results in {self._klog.name}")
                 log.complete()
+                self._klog.save_checkpoint("analysis", "complete")
                 self._klog.close_log()
                 return
 
         log.info("Generating Binary Dependency Graph")
+        self._klog.save_checkpoint("binary_dependency_graph", "start")
         # starting the analysis with less strings makes the analysis faster
         pf_str = BorderBinariesFinder.get_network_keywords(end=N_TYPE_DATA_KEYS)
         cpfs = [environment.Environment, file.File, socket.Socket, setter_getter.SetterGetter, semantic.Semantic]
         bdg = BinaryDependencyGraph(self._config, self._border_bins, self._fw_path,
                                     init_data_keys=pf_str, cpfs=cpfs, logger_obj=log)
         bdg.run()
+        self._klog.save_checkpoint("binary_dependency_graph", "complete")
 
         log.info("Discovering Bugs")
+        self._klog.save_checkpoint("bug_finding", "start")
         bf = BugFinder(self._config, bdg, analyze_parents, analyze_children, logger_obj=log)
         bf.run(report_alert=self._klog.save_alert, report_stats=self._klog.save_stats if self._add_stats else None)
+        self._klog.save_checkpoint("bug_finding", "complete")
 
         # Done.
         log.info(f"Finished, results in {self._klog.name}")
@@ -89,6 +97,8 @@ class Karonte:
 
         if self._add_stats:
             self._klog.save_global_stats(bbf, bdg, bf)
+
+        self._klog.save_checkpoint("analysis", "complete")
         self._klog.close_log()
 
 

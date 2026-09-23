@@ -100,6 +100,22 @@ class FileLogger:
         self._fp.write(txt)
         self._fp.flush()
 
+    def save_checkpoint(self, phase, status):
+        """
+        Persist a lightweight analysis checkpoint immediately.
+
+        :param phase: analysis phase
+        :param status: phase status
+        :return: None
+        """
+        now = time.time()
+        elapsed = now - self._start_time if self._start_time else 0
+
+        self.log_line(
+            f"Checkpoint: {phase}: {status} | "
+            f"timestamp={now} | elapsed={elapsed:.3f}s\\n"
+        )
+
     def close_log(self):
         """
         Closes the log
