@@ -1,6 +1,9 @@
+import hashlib
 import json
 import os
 import sys
+from pathlib import Path
+
 import angr
 import logging
 from bdg.binary_dependency_graph import BinaryDependencyGraph
@@ -9,6 +12,7 @@ from bbf.border_binaries_finder import BorderBinariesFinder
 from bf.bug_finder import BugFinder
 from loggers.file_logger import FileLogger
 from loggers.bar_logger import BarLogger
+from recovery import RecoveryStore
 from utils import *
 
 angr.loggers.disable_root_logger()
@@ -17,6 +21,129 @@ log = None
 
 
 class Karonte:
+    @staticmethod
+    def _config_sha256(config):
+        encoded = json.dumps(
+            config,
+            sort_keys=True,
+            separators=(
+                ",",
+                ":",
+            ),
+            ensure_ascii=True,
+        ).encode(
+            "utf-8"
+        )
+
+        return hashlib.sha256(
+            encoded
+        ).hexdigest()
+
+    @staticmethod
+    def _code_sha256():
+        """
+        Fingerprint the Python implementation actually being executed.
+
+        This intentionally hashes source contents rather than a Git commit
+        so local code changes also invalidate incompatible recovery state.
+        """
+
+        root = Path(
+            __file__
+        ).resolve().parent
+
+        digest = hashlib.sha256()
+
+        files = sorted(
+            p
+            for p in root.rglob(
+                "*.py"
+            )
+            if (
+                p.is_file()
+                and "__pycache__"
+                not in p.parts
+            )
+        )
+
+        for path in files:
+            relative = path.relative_to(
+                root
+            ).as_posix()
+
+            digest.update(
+                relative.encode(
+                    "utf-8"
+                )
+            )
+
+            digest.update(
+                b"\0"
+            )
+
+            digest.update(
+                path.read_bytes()
+            )
+
+            digest.update(
+                b"\0"
+            )
+
+        return digest.hexdigest()
+
+    def _prepare_recovery(
+            self,
+            log_path):
+
+        recovery_path = (
+            os.path.abspath(
+                log_path
+            )
+            + ".recovery.json"
+        )
+
+        existed = os.path.isfile(
+            recovery_path
+        )
+
+        config_sha256 = self._config_sha256(
+            self._config
+        )
+
+        code_sha256 = self._code_sha256()
+
+        store = RecoveryStore(
+            path=recovery_path,
+            config_sha256=config_sha256,
+            code_sha256=code_sha256,
+        )
+
+        if (
+            existed
+            and store.analysis_complete
+        ):
+            raise ValueError(
+                "Recovery state already belongs to a "
+                "completed analysis: %s"
+                % recovery_path
+            )
+
+        return (
+            store,
+            existed,
+            recovery_path,
+        )
+
+    def _mark_recovery_complete(self):
+        recovery = getattr(
+            self,
+            "_recovery_store",
+            None,
+        )
+
+        if recovery is not None:
+            recovery.mark_analysis_complete()
+
     def __init__(self, config_path, log_path=None):
         global log
 
@@ -69,11 +196,46 @@ class Karonte:
             else:
                 log_path = DEFAULT_LOG_PATH
 
-        self._klog = FileLogger(self._fw_path, log_path)
-        self._add_stats = 'true' == self._config['stats'].lower()
+        (
+            self._recovery_store,
+            self._resuming,
+            self._recovery_path,
+        ) = self._prepare_recovery(
+            log_path
+        )
 
-        log.info("Logging at: %s" % log_path)
-        log.info("Firmware directory: %s" % self._fw_path)
+        self._klog = FileLogger(
+            self._fw_path,
+            log_path,
+            append=self._resuming,
+        )
+
+        self._add_stats = (
+            'true'
+            == self._config['stats'].lower()
+        )
+
+        log.info(
+            "Logging at: %s"
+            % log_path
+        )
+
+        log.info(
+            "Recovery state: %s"
+            % self._recovery_path
+        )
+
+        if self._resuming:
+            log.info(
+                "Recovery state found: "
+                "completed BugFinder work units "
+                "will be skipped"
+            )
+
+        log.info(
+            "Firmware directory: %s"
+            % self._fw_path
+        )
 
     def run(self, analyze_parents=True, analyze_children=True):
         """
@@ -82,7 +244,20 @@ class Karonte:
         """
 
         self._klog.start_logging()
-        self._klog.save_checkpoint("analysis", "start")
+
+        if getattr(
+                self,
+                "_resuming",
+                False):
+            self._klog.save_checkpoint(
+                "recovery",
+                "resume",
+            )
+
+        self._klog.save_checkpoint(
+            "analysis",
+            "start",
+        )
 
         bbf = BorderBinariesFinder(self._fw_path, use_connection_mark=False, logger_obj=log)
 
@@ -95,7 +270,13 @@ class Karonte:
                 log.error("No border binaries found, exiting...")
                 log.info(f"Finished, results in {self._klog.name}")
                 log.complete()
-                self._klog.save_checkpoint("analysis", "complete")
+                self._klog.save_checkpoint(
+                    "analysis",
+                    "complete",
+                )
+
+                self._mark_recovery_complete()
+
                 self._klog.close_log()
                 return
 
@@ -111,8 +292,27 @@ class Karonte:
 
         log.info("Discovering Bugs")
         self._klog.save_checkpoint("bug_finding", "start")
-        bf = BugFinder(self._config, bdg, analyze_parents, analyze_children, logger_obj=log)
-        bf.run(report_alert=self._klog.save_alert, report_stats=self._klog.save_stats if self._add_stats else None)
+        bf = BugFinder(
+            self._config,
+            bdg,
+            analyze_parents,
+            analyze_children,
+            logger_obj=log,
+            recovery_store=getattr(
+                self,
+                "_recovery_store",
+                None,
+            ),
+        )
+
+        bf.run(
+            report_alert=self._klog.save_alert,
+            report_stats=(
+                self._klog.save_stats
+                if self._add_stats
+                else None
+            ),
+        )
         self._klog.save_checkpoint("bug_finding", "complete")
 
         # Done.
@@ -122,7 +322,13 @@ class Karonte:
         if self._add_stats:
             self._klog.save_global_stats(bbf, bdg, bf)
 
-        self._klog.save_checkpoint("analysis", "complete")
+        self._klog.save_checkpoint(
+            "analysis",
+            "complete",
+        )
+
+        self._mark_recovery_complete()
+
         self._klog.close_log()
 
 
