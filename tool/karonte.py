@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import angr
 import logging
@@ -18,9 +19,32 @@ log = None
 class Karonte:
     def __init__(self, config_path, log_path=None):
         global log
-        log = BarLogger("Karonte", "DEBUG")
-        
+
         self._config = json.load(open(config_path))
+
+        log_level = os.environ.get(
+            "KARONTE_LOG_LEVEL",
+            self._config.get(
+                "log_level",
+                "DEBUG",
+            ),
+        ).upper()
+
+        if log_level not in {
+            "DEBUG",
+            "INFO",
+            "WARNING",
+            "ERROR",
+        }:
+            raise ValueError(
+                "Invalid Karonte log level: %s"
+                % log_level
+            )
+
+        log = BarLogger(
+            "Karonte",
+            log_level,
+        )
         # remove empty keys from the config
         self._config = dict((k, v) for k, v in self._config.items() if v)
         self._pickle_parsers = self._config['pickle_parsers']
