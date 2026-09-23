@@ -327,6 +327,42 @@ def heap_alloc(_core, call_site_path, plt_path):
 env_var = {}
 
 
+def _env_var_key(value):
+    """
+    Build a stable environment-variable key without rendering a Claripy
+    AST to text.
+    """
+
+    ast_hash = getattr(value, "hash", None)
+
+    if callable(ast_hash):
+        return (
+            "claripy",
+            ast_hash(),
+        )
+
+    if isinstance(
+        value,
+        (
+            str,
+            bytes,
+            int,
+            float,
+            bool,
+            type(None),
+        ),
+    ):
+        return (
+            "literal",
+            value,
+        )
+
+    return (
+        "object",
+        id(value),
+    )
+
+
 def _setenv(_core, _, plt_path):
     """
     setenv function summary
@@ -343,7 +379,10 @@ def _setenv(_core, _, plt_path):
 
     # add the environment variable to the list of env_variables with this key
     key = getattr(plt_path.active[0].regs, arg_reg_name(p, 0))
-    env_var[str(key)] = getattr(plt_path.active[0].regs, arg_reg_name(p, 1))
+    env_var[_env_var_key(key)] = getattr(
+        plt_path.active[0].regs,
+        arg_reg_name(p, 1),
+    )
 
     # this call can continue with an empty sim procedure since it does nothing
     next_state = plt_state_cp.step()
@@ -367,7 +406,7 @@ def _getenv(_core, call_site_addr, plt_path):
 
     reg = getattr(plt_path.active[0].regs, arg_reg_name(p, 0))
     cnt_mem = _core.safe_load(plt_path, reg)
-    key = str(reg)
+    key = _env_var_key(reg)
 
     # this info is passed by some user controllable source
     if _core.is_tainted(reg, path=plt_path) or _core.is_tainted(cnt_mem, path=plt_path):

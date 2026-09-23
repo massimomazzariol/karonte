@@ -113,7 +113,7 @@ class FileLogger:
 
         self.log_line(
             f"Checkpoint: {phase}: {status} | "
-            f"timestamp={now} | elapsed={elapsed:.3f}s\\n"
+            f"timestamp={now} | elapsed={elapsed:.3f}s\n"
         )
 
     def close_log(self):

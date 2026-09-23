@@ -155,6 +155,17 @@ class PersistentResultsLogTests(unittest.TestCase):
                 persisted,
             )
 
+            self.assertTrue(
+                persisted.endswith("\n"),
+                "checkpoint must end with a real newline",
+            )
+
+            self.assertNotIn(
+                "\\n",
+                persisted,
+                "checkpoint must not contain a literal backslash-n",
+            )
+
         finally:
             if logger is not None:
                 try:

@@ -101,14 +101,38 @@ class BugFinder:
             if val_arg.concrete and val_arg.args[0] < p.loader.main_object.min_addr:
                 continue
 
-            log.info(f"taint applied to {reg_name}:{str(val_arg)}")
+            val_op = getattr(val_arg, "op", type(val_arg).__name__)
+            val_bits = getattr(val_arg, "length", None)
+            log.info(
+                f"taint applied to {reg_name} "
+                f"(op={val_op}, bits={val_bits})"
+            )
 
-            # if size is none, it will be estimated in apply_taint
+            # Keep the load and taint sizes consistent. If the data-key
+            # size is unknown, estimate it once and reuse that bit length.
             if reg_name == data_key_reg:
                 reg_addr = getattr(next_state.regs, reg_name)
-                loaded = self._ct.safe_load(current_path, reg_addr, size=int(size / 8))
 
-            tainted_var = self._ct.apply_taint(current_path, val_arg, reg_name, size)
+                if size is None:
+                    loaded = self._ct.safe_load(
+                        current_path,
+                        reg_addr,
+                        estimate_size=True,
+                    )
+                    size = loaded.length
+                else:
+                    loaded = self._ct.safe_load(
+                        current_path,
+                        reg_addr,
+                        size=int(size / 8),
+                    )
+
+            tainted_var = self._ct.apply_taint(
+                current_path,
+                val_arg,
+                reg_name,
+                size,
+            )
 
             # constrain this register if it is the data key
             if reg_name == data_key_reg:
