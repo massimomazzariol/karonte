@@ -159,18 +159,29 @@ class BarLogger:
         except:
             pass
 
+
     def warning(self, msg, *kargs):
         """
         Warning message
 
         :param msg: message
-        :param kargs:  kargs
+        :param kargs: kargs
         :return: None
         """
 
+        if self._log_level not in (
+                LogLevel.WARNING,
+                LogLevel.INFO,
+                LogLevel.DEBUG):
+            return
+
         try:
-            if self._log_level in (LogLevel.WARNING, LogLevel.INFO, LogLevel.DEBUG):
-                self._print_it(LogLevel.WARNING, BColors.WARNING, msg, *kargs)
+            self._print_it(
+                LogLevel.WARNING,
+                BColors.WARNING,
+                msg,
+                *kargs
+            )
             self._update_bar()
         except:
             pass
@@ -180,13 +191,22 @@ class BarLogger:
         Info message
 
         :param msg: message
-        :param kargs:  kargs
+        :param kargs: kargs
         :return: None
         """
 
+        if self._log_level not in (
+                LogLevel.INFO,
+                LogLevel.DEBUG):
+            return
+
         try:
-            if self._log_level in (LogLevel.INFO, LogLevel.DEBUG):
-                self._print_it(LogLevel.INFO, BColors.INFO, msg, *kargs)
+            self._print_it(
+                LogLevel.INFO,
+                BColors.INFO,
+                msg,
+                *kargs
+            )
             self._update_bar()
         except:
             pass
@@ -196,17 +216,24 @@ class BarLogger:
         Debug message
 
         :param msg: message
-        :param kargs:  kargs
+        :param kargs: kargs
         :return: None
         """
 
+        # DEBUG sits directly on the symbolic-execution hot path.
+        # When disabled it must not format output or refresh the bar.
+        if self._log_level != LogLevel.DEBUG:
+            return
+
         try:
-            if self._log_level in (LogLevel.DEBUG,):
-                self._print_it(LogLevel.DEBUG, BColors.DEBUG, msg, *kargs)
-            self._update_bar()
+            self._print_it(
+                LogLevel.DEBUG,
+                BColors.DEBUG,
+                msg,
+                *kargs
+            )
         except:
             pass
-
     def complete(self):
         """
         Set the bar to complete
