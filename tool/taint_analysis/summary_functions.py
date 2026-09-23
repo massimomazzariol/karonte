@@ -193,7 +193,7 @@ def memcpy_unsized(_core, call_site_path, plt_path):
 
 
 def is_size_taint(v):
-    return '__size__' in str(v)
+    return any('__size__' in name for name in v.variables)
 
 
 def sizeof(_core, call_site_path, plt_path):
