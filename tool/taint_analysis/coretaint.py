@@ -845,6 +845,103 @@ class CoreTaint:
         self.get_state(path).downsize()
         self.get_state(path).history.trim()
 
+    def _recover_unconstrained_call(self, current_path, succ_path):
+        """
+        Build a synthetic fake-return state for an indirect call whose
+        destination became unconstrained.
+
+        The successor produced by angr already contains the architectural
+        return address in the link register. Preserve that return address,
+        restore the caller link register, synthesize the return value and
+        optionally propagate taint according to the existing CoreTaint
+        configuration.
+        """
+
+        if not succ_path.unconstrained:
+            return None
+
+        arch = self._p.arch
+
+        if arch.lr_offset is None or arch.ret_offset is None:
+            log.error(
+                f"Cannot recover unconstrained call for architecture {arch.name}: "
+                "missing link/return register metadata"
+            )
+            return None
+
+        link_reg = arch.register_names.get(arch.lr_offset)
+        ret_reg = arch.register_names.get(arch.ret_offset)
+
+        if not link_reg or not ret_reg:
+            log.error(
+                f"Cannot recover unconstrained call for architecture {arch.name}: "
+                "register names unavailable"
+            )
+            return None
+
+        unc_state = succ_path.unconstrained[0]
+        caller_state = self.get_state(current_path)
+
+        ret_addr = getattr(unc_state.regs, link_reg)
+
+        new_state = unc_state.copy()
+        new_state.history.jumpkind = "Ijk_FakeRet"
+        new_state.regs.pc = ret_addr
+
+        caller_link = getattr(caller_state.regs, link_reg)
+        setattr(new_state.regs, link_reg, caller_link)
+
+        to_taint = False
+
+        try:
+            if self.is_or_points_to_tainted_data(
+                    unc_state.ip, succ_path, unconstrained=True):
+                to_taint = True
+        except TimeOutException:
+            raise
+        except Exception:
+            pass
+
+        try:
+            nargs = get_arity(self._p, self.get_addr(current_path))
+        except Exception:
+            nargs = 0
+
+        if not to_taint:
+            for reg_name in arg_reg_names(self._p, nargs):
+                try:
+                    val_arg = getattr(caller_state.regs, reg_name)
+                    if self.is_or_points_to_tainted_data(
+                            val_arg, current_path):
+                        to_taint = True
+                        break
+                except TimeOutException:
+                    raise
+                except Exception:
+                    continue
+
+        ret_name = "reg_ret_"
+
+        if self._taint_returns_unfollowed_calls and to_taint:
+            ret_name = self._taint_buf + "_" + ret_name
+
+        setattr(
+            new_state.regs,
+            ret_reg,
+            self._get_sym_val(name=ret_name)
+        )
+
+        if to_taint and self._taint_arguments_unfollowed_calls:
+            for reg_name in arg_reg_names(self._p, nargs):
+                taint_name = self._taint_buf + "_" + reg_name
+                setattr(
+                    new_state.regs,
+                    reg_name,
+                    self._get_sym_val(name=taint_name)
+                )
+
+        return new_state
+
     # FIXME: change offset according arch.
     def _next_inst(self, bl):
         """
@@ -934,25 +1031,16 @@ class CoreTaint:
             if not bl:
                 return
             if bl.vex.jumpkind == 'Ijk_Call':
-                # create a fake successors
-                # which should have been created
-                # before.
-                if not succ_path.unconstrained:
+                recovered_state = self._recover_unconstrained_call(
+                    current_path, succ_path)
+
+                if recovered_state is None:
                     return
-                log.error("Unconstrained call. Fix This. Not ported yet :-(")
-                # raise NotImplementedError("Unconstrained call. Fix This")
-                # FIXME: I should use get_below_block
-                # but as of now I don;t want to use CFG
-                # unc_state = succ_path.unconstrained[0]
-                # ret_addr = self._next_inst(bl)
-                # # only do this when there is a link register in the current arch
-                # if link_regs[self._p.arch.name]:
-                #     link_reg = self._p.arch.register_names[link_regs[self._p.arch.name]]
-                #     ret_func = getattr(self.get_state(current_path).regs, link_reg)
-                #     tmp_path = self._set_fake_ret_succ(current_path, unc_state, ret_addr, ret_func)
-                # else:
-                #     tmp_path = self._set_fake_ret_succ(current_path, unc_state)
-                # succ_states_sat = [self.get_state(tmp_path)]
+
+                log.debug(
+                    "Recovered unconstrained call with synthetic fake return"
+                )
+                succ_states_sat = [recovered_state]
 
         # register sat and unsat information so that later we can drop the constraints
         for s in succ_states_sat:
