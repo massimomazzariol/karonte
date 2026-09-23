@@ -882,7 +882,7 @@ class BinaryDependencyGraph:
         return self._graph
 
     def analysis_time(self):
-        if not self._end_time or self._start_time:
+        if not self._end_time or not self._start_time:
             return 0
         return self._end_time - self._start_time
 
