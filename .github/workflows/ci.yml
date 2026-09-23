@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Python 3.8 tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.8
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+          cache: pip
+          cache-dependency-path: .github/requirements-ci.txt
+
+      - name: Prepare packaging tools
+        run: |
+          python -m pip install --upgrade \
+            pip==24.3.1 \
+            setuptools==70.3.0 \
+            wheel
+
+      - name: Install Karonte test dependencies
+        run: |
+          python -m pip install \
+            -r .github/requirements-ci.txt
+
+      - name: Compile Python sources
+        run: |
+          python -m compileall -q tool tests
+
+      - name: Run regression tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/tool:${{ github.workspace }}
+        run: |
+          python -m unittest discover \
+            -s tests \
+            -p 'test_*.py' \
+            -v
+
+      - name: Repository hygiene
+        shell: bash
+        run: |
+          set -e
+
+          if git ls-files | grep -E '(^|/)__pycache__/|\.py[co]$'; then
+            echo "Tracked Python cache files found."
+            exit 1
+          fi
+
+          if git grep -nE '/home/[A-Za-z0-9._-]+/' -- .; then
+            echo "Absolute user home path found."
+            exit 1
+          fi
+
+      - name: Dashboard syntax
+        shell: bash
+        run: |
+          set -e
+
+          if [ -f utils/live_dashboard/karonte_live.py ]; then
+            python -m py_compile \
+              utils/live_dashboard/karonte_live.py
+          fi
+
+          if [ -f utils/live_dashboard/karonte-live ]; then
+            bash -n \
+              utils/live_dashboard/karonte-live
+          fi
