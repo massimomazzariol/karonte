@@ -549,7 +549,7 @@ class BugFinder:
                 cond_guard = [g for g in next_active[0].history.jump_guards][-1]
 
                 for node in cond_guard.recursive_leaf_asts:
-                    if self._ct._taint_buf in str(node):
+                    if self._ct._contains_taint_marker(node):
                         log.info("Found a loop guarded by a tainted variable. Reporting Alert!")
                         delta_t = time.time() - self._analysis_starting_time
                         self._raised_alert = True
