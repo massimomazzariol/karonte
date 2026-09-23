@@ -3,17 +3,43 @@ import sys
 import z3
 
 
-_CHUNK_DIGITS = 9
-_CHUNK_BASE = 10 ** _CHUNK_DIGITS
+_get_int_limit = getattr(
+    sys,
+    "get_int_max_str_digits",
+    None,
+)
+
+if _get_int_limit is None:
+    _INT_STRING_CHUNK_SIZE = None
+else:
+    _limit = _get_int_limit()
+
+    _INT_STRING_CHUNK_SIZE = (
+        _limit
+        if _limit > 0
+        else None
+    )
+
+
+_INT_STRING_CHUNK_BASE = (
+    10 ** _INT_STRING_CHUNK_SIZE
+    if _INT_STRING_CHUNK_SIZE
+    else None
+)
 
 
 def _int_to_decimal_unlimited(value):
     """
-    Convert a Python int to decimal without rendering the complete integer
-    through Python's guarded int-to-string conversion.
+    Convert an integer to decimal without exceeding Python's guarded
+    int-to-string conversion limit.
+
+    This follows the strategy used by modern Claripy: split very large
+    integers into decimal chunks no larger than int_max_str_digits.
     """
 
-    if isinstance(value, bool):
+    if isinstance(
+            value,
+            bool):
         return (
             "1"
             if value
@@ -25,6 +51,13 @@ def _int_to_decimal_unlimited(value):
             int):
         raise TypeError(
             "value must be an int"
+        )
+
+    if (
+        _INT_STRING_CHUNK_SIZE is None
+    ):
+        return str(
+            value
         )
 
     if value == 0:
@@ -40,27 +73,23 @@ def _int_to_decimal_unlimited(value):
     while value:
         value, remainder = divmod(
             value,
-            _CHUNK_BASE,
+            _INT_STRING_CHUNK_BASE,
         )
 
         chunks.append(
             remainder
         )
 
-    head = str(
+    result = str(
         chunks.pop()
     )
 
-    tail = "".join(
-        "%09d" % chunk
-        for chunk
-        in reversed(chunks)
-    )
-
-    result = (
-        head
-        + tail
-    )
+    while chunks:
+        result += str(
+            chunks.pop()
+        ).zfill(
+            _INT_STRING_CHUNK_SIZE
+        )
 
     if negative:
         result = (
@@ -73,12 +102,11 @@ def _int_to_decimal_unlimited(value):
 
 def install_z3_int_compat():
     """
-    Work around legacy Z3Py integer rendering on Python runtimes with
-    int_max_str_digits.
+    Backport modern Claripy's large-integer Z3 compatibility behavior.
 
-    Ordinary-size integers keep using Z3Py's original path. Only integers
-    large enough to risk Python's decimal conversion guard use the
-    chunked conversion.
+    Ordinary integers retain Z3Py's original conversion path. Only values
+    large enough to risk Python's int_max_str_digits guard use the
+    unlimited chunked conversion.
     """
 
     target = z3.z3
@@ -98,32 +126,28 @@ def install_z3_int_compat():
             False):
         return False
 
-    get_limit = getattr(
-        sys,
-        "get_int_max_str_digits",
-        None,
-    )
-
-    if get_limit is None:
+    if (
+        _INT_STRING_CHUNK_SIZE
+        is None
+    ):
         return False
 
-    limit = get_limit()
-
-    if limit == 0:
-        return False
+    original = current
 
     #
-    # Feature-detect the actual legacy Z3Py problem.
+    # Feature detection:
+    # only patch Z3Py if its own integer conversion still fails.
     #
-    # Four binary bits per configured decimal digit are guaranteed to
-    # exceed the decimal digit limit by a comfortable margin.
-    #
-    probe = 1 << (
-        limit * 4
+    probe = (
+        1
+        << (
+            _INT_STRING_CHUNK_SIZE
+            * 4
+        )
     )
 
     try:
-        current(
+        original(
             probe
         )
 
@@ -135,44 +159,38 @@ def install_z3_int_compat():
             raise
 
     else:
-        # Z3Py already knows how to handle large integers.
         return False
 
-    original = current
-
     #
-    # Three binary bits per decimal digit are always safely below the
-    # decimal limit because 2**3 == 8 < 10.
-    #
-    # Therefore normal integers keep the original Z3Py fast path.
+    # 2**(3*n) has fewer than n decimal digits because 8**n < 10**n.
+    # This gives ordinary integers a conservative fast path through the
+    # original Z3Py implementation.
     #
     safe_bit_length = (
-        limit * 3
+        _INT_STRING_CHUNK_SIZE
+        * 3
     )
 
     def safe_to_int_str(value):
-        if isinstance(
+        if (
+            isinstance(
                 value,
-                bool):
-            return original(
-                value
+                int,
             )
-
-        if isinstance(
+            and not isinstance(
                 value,
-                int):
-
+                bool,
+            )
+        ):
             if (
                 value.bit_length()
-                <= safe_bit_length
+                > safe_bit_length
             ):
-                return original(
-                    value
+                return (
+                    _int_to_decimal_unlimited(
+                        value
+                    )
                 )
-
-            return _int_to_decimal_unlimited(
-                value
-            )
 
         return original(
             value
@@ -184,6 +202,8 @@ def install_z3_int_compat():
         safe_bit_length
     )
 
-    target._to_int_str = safe_to_int_str
+    target._to_int_str = (
+        safe_to_int_str
+    )
 
     return True

@@ -4,6 +4,7 @@ import unittest
 import z3
 
 from z3_compat import (
+    _INT_STRING_CHUNK_SIZE,
     _int_to_decimal_unlimited,
     install_z3_int_compat,
 )
@@ -187,6 +188,27 @@ class Z3LargeIntegerCompatTests(
             result,
             str,
         )
+
+    def test_chunk_size_tracks_python_guard(self):
+        if self.limit_getter is None:
+            self.assertIsNone(
+                _INT_STRING_CHUNK_SIZE
+            )
+
+            return
+
+        limit = self.limit_getter()
+
+        if limit == 0:
+            self.assertIsNone(
+                _INT_STRING_CHUNK_SIZE
+            )
+
+        else:
+            self.assertEqual(
+                _INT_STRING_CHUNK_SIZE,
+                limit,
+            )
 
 
 if __name__ == "__main__":
