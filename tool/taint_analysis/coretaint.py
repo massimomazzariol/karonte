@@ -1,5 +1,9 @@
 import os
 
+from z3_compat import install_z3_int_compat
+
+install_z3_int_compat()
+
 import claripy
 import logging
 import random
