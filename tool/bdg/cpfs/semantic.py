@@ -422,8 +422,9 @@ class Semantic(CPF):
                                                        for sec in p.loader.main_object.sections
                                                        if sec.name in ('.bss', '.data')]):
                         globl = True
-                    elif any([str(cnt_buff) == str(current_path.active[0].memory.load(val, p.arch.bytes))
-                              for val in par_vals]):
+                    elif any(cnt_buff.structurally_match(
+                            current_path.active[0].memory.load(val, p.arch.bytes))
+                            for val in par_vals):
                         arg_copied = True
 
                 if arg_copied and tainted and globl:
