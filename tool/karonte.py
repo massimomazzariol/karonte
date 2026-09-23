@@ -4,6 +4,10 @@ import os
 import sys
 from pathlib import Path
 
+from z3_compat import install_z3_int_compat
+
+install_z3_int_compat()
+
 import angr
 import logging
 from bdg.binary_dependency_graph import BinaryDependencyGraph
