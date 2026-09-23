@@ -54,6 +54,7 @@ class BugFinder:
         self._analysis_starting_time = None
         self._taint_names_applied = []
         self._sink_addrs = []
+        self._sink_addrs_cache = {}
         self._current_cfg = None
         self._raised_alert = False
         self._report_alert_fun = None
@@ -122,9 +123,17 @@ class BugFinder:
         """
 
         p = self._current_p
+        bin_name = p.loader.main_object.binary
 
-        self._sink_addrs = [(get_dyn_sym_addr(p, func[0]), func[1]) for func in SINK_FUNCS]
-        self._sink_addrs += [(m, sinks.memcpy) for m in find_memcpy_like(p)]
+        if bin_name in self._sink_addrs_cache:
+            self._sink_addrs = self._sink_addrs_cache[bin_name]
+            return
+
+        sink_addrs = [(get_dyn_sym_addr(p, func[0]), func[1]) for func in SINK_FUNCS]
+        sink_addrs += [(m, sinks.memcpy) for m in find_memcpy_like(p)]
+
+        self._sink_addrs_cache[bin_name] = sink_addrs
+        self._sink_addrs = sink_addrs
 
     def _jump_in_sink(self, current_path, next_path):
         """
