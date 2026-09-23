@@ -8,14 +8,29 @@ import os
 
 
 class FileLogger:
-    def __init__(self, fw, filename):
+    def __init__(
+            self,
+            fw,
+            filename,
+            append=False):
         self._fw = fw
         self._filename = filename
+        self._append = append
         self._logged_paths = set()
         self._start_time = None
         self._end_time = None
         self._complexity = {}
-        self._fp = open(filename, "w")
+
+        mode = (
+            "a"
+            if append
+            else "w"
+        )
+
+        self._fp = open(
+            filename,
+            mode,
+        )
 
     def handler(self, signum, frame):
         raise Exception("Get out")

@@ -1,3 +1,5 @@
+import hashlib
+import json
 import logging
 import os
 import time
@@ -25,7 +27,14 @@ log.setLevel("DEBUG")
 
 
 class BugFinder:
-    def __init__(self, config, bdg, analyze_parents=True, analyze_children=True, logger_obj=None):
+    def __init__(
+            self,
+            config,
+            bdg,
+            analyze_parents=True,
+            analyze_children=True,
+            logger_obj=None,
+            recovery_store=None):
         global log
 
         if logger_obj:
@@ -59,6 +68,9 @@ class BugFinder:
         self._raised_alert = False
         self._report_alert_fun = None
 
+        self._recovery_store = recovery_store
+        self._recovery_accounted_jobs = set()
+
         # stats
         self._stats = {}
         self._visited_bb = 0
@@ -66,6 +78,326 @@ class BugFinder:
         self._start_time = None
         self._end_time = None
         self._report_stats_fun = None
+
+    _RECOVERY_STAT_FIELDS = (
+        "n_paths",
+        "ana_time",
+        "visited_bb",
+        "n_runs",
+        "to",
+    )
+
+    @staticmethod
+    def _recovery_value(value):
+        if value is None or isinstance(
+                value,
+                (
+                    str,
+                    int,
+                    float,
+                    bool,
+                )):
+            return value
+
+        if isinstance(
+                value,
+                bytes):
+            return {
+                "bytes": value.hex(),
+            }
+
+        name = getattr(
+            value,
+            "name",
+            None,
+        )
+
+        enum_value = getattr(
+            value,
+            "value",
+            None,
+        )
+
+        if (
+            isinstance(name, str)
+            and enum_value is not None
+        ):
+            return {
+                "enum": (
+                    value.__class__.__module__
+                    + "."
+                    + value.__class__.__name__
+                ),
+                "name": name,
+            }
+
+        ast_hash = getattr(
+            value,
+            "hash",
+            None,
+        )
+
+        if callable(ast_hash):
+            return {
+                "type": (
+                    value.__class__.__module__
+                    + "."
+                    + value.__class__.__name__
+                ),
+                "hash": int(
+                    ast_hash()
+                ),
+            }
+
+        raise TypeError(
+            "Unsupported recovery identity value: %s"
+            % type(value).__name__
+        )
+
+    def _work_unit_metadata(
+            self,
+            bdg_node,
+            seed_addr,
+            info):
+
+        return {
+            "binary": str(
+                bdg_node.bin
+            ),
+            "seed_addr": int(
+                seed_addr
+            ),
+            "role": self._recovery_value(
+                info.get(
+                    RoleInfo.ROLE
+                )
+            ),
+            "data_key": self._recovery_value(
+                info.get(
+                    RoleInfo.DATAKEY
+                )
+            ),
+            "x_ref_fun": self._recovery_value(
+                info.get(
+                    RoleInfo.X_REF_FUN
+                )
+            ),
+            "caller_bb": self._recovery_value(
+                info.get(
+                    RoleInfo.CALLER_BB
+                )
+            ),
+            "role_fun": self._recovery_value(
+                info.get(
+                    RoleInfo.ROLE_FUN
+                )
+            ),
+            "par_n": self._recovery_value(
+                info.get(
+                    RoleInfo.PAR_N
+                )
+            ),
+        }
+
+    def _work_unit_id(
+            self,
+            bdg_node,
+            seed_addr,
+            info):
+
+        metadata = self._work_unit_metadata(
+            bdg_node,
+            seed_addr,
+            info,
+        )
+
+        encoded = json.dumps(
+            metadata,
+            sort_keys=True,
+            separators=(
+                ",",
+                ":",
+            ),
+            ensure_ascii=True,
+        ).encode(
+            "utf-8"
+        )
+
+        return hashlib.sha256(
+            encoded
+        ).hexdigest()
+
+    @classmethod
+    def _empty_work_unit_stats(cls):
+        return {
+            field: 0
+            for field
+            in cls._RECOVERY_STAT_FIELDS
+        }
+
+    def _stats_snapshot(
+            self,
+            bin_name):
+
+        source = self._stats.get(
+            bin_name,
+            {},
+        )
+
+        return {
+            field: source.get(
+                field,
+                0,
+            )
+            for field
+            in self._RECOVERY_STAT_FIELDS
+        }
+
+    @classmethod
+    def _stats_delta(
+            cls,
+            before,
+            after):
+
+        return {
+            field: (
+                after.get(
+                    field,
+                    0,
+                )
+                - before.get(
+                    field,
+                    0,
+                )
+            )
+            for field
+            in cls._RECOVERY_STAT_FIELDS
+        }
+
+    def _restore_work_unit_stats(
+            self,
+            bin_name,
+            stats):
+
+        target = self._stats.setdefault(
+            bin_name,
+            self._empty_work_unit_stats(),
+        )
+
+        for field in self._RECOVERY_STAT_FIELDS:
+            target[field] += stats.get(
+                field,
+                0,
+            )
+
+    def _run_work_unit(
+            self,
+            bdg_node,
+            seed_addr,
+            info):
+
+        recovery = getattr(
+            self,
+            "_recovery_store",
+            None,
+        )
+
+        if recovery is None:
+            self._vuln_analysis(
+                bdg_node,
+                seed_addr,
+                info,
+            )
+
+            return True
+
+        accounted = getattr(
+            self,
+            "_recovery_accounted_jobs",
+            None,
+        )
+
+        if accounted is None:
+            accounted = set()
+            self._recovery_accounted_jobs = accounted
+
+        job_id = self._work_unit_id(
+            bdg_node,
+            seed_addr,
+            info,
+        )
+
+        if recovery.is_complete(
+                job_id):
+
+            if job_id not in accounted:
+                recovered_stats = (
+                    recovery.completed_stats(
+                        job_id
+                    )
+                    or {}
+                )
+
+                self._restore_work_unit_stats(
+                    bdg_node.bin,
+                    recovered_stats,
+                )
+
+                accounted.add(
+                    job_id
+                )
+
+            log.info(
+                "Recovery: skipping completed "
+                "work unit %s for %s",
+                job_id[:12],
+                os.path.basename(
+                    bdg_node.bin
+                ),
+            )
+
+            return False
+
+        metadata = self._work_unit_metadata(
+            bdg_node,
+            seed_addr,
+            info,
+        )
+
+        recovery.mark_started(
+            job_id,
+            metadata,
+        )
+
+        before = self._stats_snapshot(
+            bdg_node.bin
+        )
+
+        self._vuln_analysis(
+            bdg_node,
+            seed_addr,
+            info,
+        )
+
+        after = self._stats_snapshot(
+            bdg_node.bin
+        )
+
+        delta = self._stats_delta(
+            before,
+            after,
+        )
+
+        recovery.mark_complete(
+            job_id,
+            stats=delta,
+        )
+
+        accounted.add(
+            job_id
+        )
+
+        return True
 
     def _apply_taint(self, addr, current_path, next_state, taint_key=False, data_key_reg=None):
         """
@@ -407,7 +739,7 @@ class BugFinder:
                         analyzed_dk[parent].append(info)
                         self._register_next_elaboration()
                         log.info(f"New string: {info[RoleInfo.DATAKEY]}")
-                        self._vuln_analysis(parent, s_addr, info)
+                        self._run_work_unit(parent, s_addr, info)
                 self._report_stats_fun(parent, self._stats)
 
             if self._analyze_children:
@@ -430,7 +762,7 @@ class BugFinder:
                                 self._register_next_elaboration()
                                 analyzed_dk[child].append(info)
                                 log.info(f"New string: {info[RoleInfo.DATAKEY]}")
-                                self._vuln_analysis(child, s_addr, info)
+                                self._run_work_unit(child, s_addr, info)
                     self._report_stats_fun(child, self._stats)
 
         if self._analyze_children:
@@ -453,7 +785,7 @@ class BugFinder:
                         # update the loading bar
                         self._register_next_elaboration()
                         log.info(f"New string: {info[RoleInfo.DATAKEY]}")
-                        self._vuln_analysis(n, s_addr, info)
+                        self._run_work_unit(n, s_addr, info)
                 self._report_stats_fun(n, self._stats)
 
     def analysis_time(self):
