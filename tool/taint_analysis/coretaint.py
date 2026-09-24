@@ -1015,7 +1015,14 @@ class CoreTaint:
             shuffle(next_states)
         return next_states
 
-    def _flat_explore(self, current_path, check_path_fun, guards_info, current_depth, **kwargs):
+    def _flat_explore(
+            self,
+            current_path,
+            check_path_fun,
+            guards_info,
+            current_depth,
+            reuse_check_func_successor=False,
+            **kwargs):
 
         """
         Performs the symbolic-based exploration
@@ -1039,20 +1046,98 @@ class CoreTaint:
             log.error("State got messed up!")
             raise UnSATException("State became UNSAT")
 
+        #
+        # BugFinder historically stepped a deep copy of current_path only
+        # to inspect the successor, after which CoreTaint stepped the same
+        # path again for real exploration.
+        #
+        # In opt-in mode CoreTaint now creates its normal successor first
+        # and lends it to the callback. The callback may approve reuse
+        # only when neither current_path nor the candidate successor was
+        # subject to potentially stateful inspection.
+        #
+        candidate_path = None
+        successor_reusable = False
+
+        if reuse_check_func_successor:
+            try:
+                candidate_path = (
+                    current_path
+                    .copy()
+                    .step()
+                )
+            except Exception as e:
+                log.debug(
+                    f"Reusable successor unavailable: {str(e)}"
+                )
+
         # check whether we reached a sink
         # todo add back in
         try:
-            check_path_fun(current_path, guards_info, current_depth, **kwargs)
+            if candidate_path is not None:
+                successor_reusable = (
+                    check_path_fun(
+                        current_path,
+                        guards_info,
+                        current_depth,
+                        _karonte_successor_path=candidate_path,
+                        **kwargs
+                    )
+                    is True
+                )
+            else:
+                check_path_fun(
+                    current_path,
+                    guards_info,
+                    current_depth,
+                    **kwargs
+                )
+
         except Exception as e:
             if not self._keep_run:
                 return
-            log.error(f"'Function check path errored out: {str(e)}")
 
-        try:
-            succ_path = current_path.copy().step()
-        except Exception as e:
-            log.error(f"ERROR: {str(e)}")
-            return
+            log.error(
+                f"'Function check path errored out: {str(e)}"
+            )
+
+            successor_reusable = False
+
+        if (
+            candidate_path is not None
+            and successor_reusable
+        ):
+            succ_path = candidate_path
+
+        else:
+            #
+            # The candidate belongs to CoreTaint. If BugFinder rejects it,
+            # release its disposable states before producing the real
+            # successor from the possibly modified current path.
+            #
+            if candidate_path is not None:
+                for state in (
+                    candidate_path.active
+                    + candidate_path.unconstrained
+                ):
+                    state.history.trim()
+                    state.downsize()
+                    state.release_plugin(
+                        'solver'
+                    )
+
+            try:
+                succ_path = (
+                    current_path
+                    .copy()
+                    .step()
+                )
+
+            except Exception as e:
+                log.error(
+                    f"ERROR: {str(e)}"
+                )
+                return
 
         # try thumb
         if succ_path and succ_path.errored and self._try_thumb and not self._force_paths:
@@ -1171,7 +1256,14 @@ class CoreTaint:
                 new_guards_info.append([hex(self.get_addr(current_path)), current_guards[-1]])
 
             # next step!
-            self._flat_explore(next_path, check_path_fun, new_guards_info, next_depth, **kwargs)
+            self._flat_explore(
+                next_path,
+                check_path_fun,
+                new_guards_info,
+                next_depth,
+                reuse_check_func_successor=reuse_check_func_successor,
+                **kwargs
+            )
             log.debug(f"Back to block {hex(self.get_addr(current_path))}")
             self._new_path = True
 
@@ -1198,7 +1290,14 @@ class CoreTaint:
 
         self._keep_run = False
 
-    def flat_explore(self, state, check_path_fun, guards_info, force_thumb=False, **kwargs):
+    def flat_explore(
+            self,
+            state,
+            check_path_fun,
+            guards_info,
+            force_thumb=False,
+            reuse_check_func_successor=False,
+            **kwargs):
         """
         Run a symbolic-based exploration
 
@@ -1217,7 +1316,14 @@ class CoreTaint:
         if force_thumb:
             # set thumb mode
             initial_path = initial_path.step(thumb=True)[0]
-        self._flat_explore(initial_path, check_path_fun, guards_info, current_depth, **kwargs)
+        self._flat_explore(
+            initial_path,
+            check_path_fun,
+            guards_info,
+            current_depth,
+            reuse_check_func_successor=reuse_check_func_successor,
+            **kwargs
+        )
 
     def _init_bss(self, state):
         """
@@ -1277,8 +1383,17 @@ class CoreTaint:
             # let's restore it
             signal.alarm(self._old_timer)
 
-    def run(self, state, sinks_info, sources_info, summarized_f=None, init_bss=True,
-            check_func=None, force_thumb=False, use_smart_concretization=True):
+    def run(
+            self,
+            state,
+            sinks_info,
+            sources_info,
+            summarized_f=None,
+            init_bss=True,
+            check_func=None,
+            force_thumb=False,
+            use_smart_concretization=True,
+            reuse_check_func_successor=False):
 
         """
         Run the static taint engine
@@ -1333,8 +1448,15 @@ class CoreTaint:
             log.info("init .bss")
             self._init_bss(state)
         try:
-            self.flat_explore(state, check_func, [], force_thumb=force_thumb, sinks_info=sinks_info,
-                              sources_info=sources_info)
+            self.flat_explore(
+                state,
+                check_func,
+                [],
+                force_thumb=force_thumb,
+                reuse_check_func_successor=reuse_check_func_successor,
+                sinks_info=sinks_info,
+                sources_info=sources_info
+            )
         except TimeOutException:
             log.warning("Hard timeout triggered")
 

@@ -66,6 +66,7 @@ class BugFinder:
         self._sink_addrs_cache = {}
         self._current_cfg = None
         self._raised_alert = False
+        self._successor_sink_handler_ran = False
         self._report_alert_fun = None
 
         self._recovery_store = recovery_store
@@ -523,12 +524,30 @@ class BugFinder:
 
         p = self._current_p
 
-        is_sink, check_taint_func = self._jump_in_sink(current_path, next_path)
+        self._successor_sink_handler_ran = False
+
+        is_sink, check_taint_func = self._jump_in_sink(
+            current_path,
+            next_path
+        )
+
         if not is_sink:
             return []
 
+        #
+        # Sink handlers may perform safe_load(), solver queries and
+        # address concretization on next_path. Record that the candidate
+        # successor was subject to stateful inspection so CoreTaint can
+        # discard it before continuing real exploration.
+        #
+        self._successor_sink_handler_ran = True
+
         # check if the sink is tainted and collect necessary information
-        return check_taint_func(p, self._ct, next_path)
+        return check_taint_func(
+            p,
+            self._ct,
+            next_path
+        )
 
     def _discover_http_strings(self, strs):
         """
@@ -587,8 +606,16 @@ class BugFinder:
 
             self._ct.set_alarm(TIMEOUT_TAINT, n_tries=TIMEOUT_TRIES)
 
-            self._ct.run(s, (), (), summarized_f=summarized_f, force_thumb=False, check_func=self._check_sink,
-                         init_bss=False)
+            self._ct.run(
+                s,
+                (),
+                (),
+                summarized_f=summarized_f,
+                force_thumb=False,
+                check_func=self._check_sink,
+                init_bss=False,
+                reuse_check_func_successor=True
+            )
         except TimeOutException:
             log.warning("Hard timeout triggered")
         except Exception as e:
@@ -801,6 +828,18 @@ class BugFinder:
         :return: None
         """
 
+        next_path = __.get(
+            "_karonte_successor_path"
+        )
+
+        reuse_successor = (
+            next_path is not None
+        )
+
+        successor_reusable = False
+        path_mutated = False
+        successor_side_effect_risk = False
+
         try:
             current_state = current_path.active[0]
             current_addr = current_state.addr
@@ -808,40 +847,110 @@ class BugFinder:
 
             self._visited_bb += 1
 
-            next_path = current_path.copy(deep=True).step()
+            if next_path is None:
+                next_path = (
+                    current_path
+                    .copy(deep=True)
+                    .step()
+                )
+
             info = self._current_role_info
             # check constant comparisons and untaint if necessary
             bounded, var = self._is_any_taint_var_bounded(guards_info)
             if bounded:
-                self._ct.do_recursive_untaint(var, current_path)
+                path_mutated = True
+                self._ct.do_recursive_untaint(
+                    var,
+                    current_path
+                )
 
             # If the taint is not applied yet, apply it
             if not self._ct.taint_applied and current_addr == info[RoleInfo.CALLER_BB]:
                 next_state = next_path.active[0]
-                self._apply_taint(current_addr, current_path, next_state, taint_key=True,
-                                  data_key_reg=arg_reg_name(self._current_p, info[RoleInfo.PAR_N]))
+                path_mutated = True
+                self._apply_taint(
+                    current_addr,
+                    current_path,
+                    next_state,
+                    taint_key=True,
+                    data_key_reg=arg_reg_name(
+                        self._current_p,
+                        info[RoleInfo.PAR_N]
+                    )
+                )
             try:
                 if 'eg_source_addr' in self._config and len(next_path.active) and self._config['eg_source_addr']:
                     if next_path.active[0].addr == int(self._config['eg_source_addr'], 16):
                         next_state = next_path.active[0]
-                        self._apply_taint(current_addr, current_path, next_state, taint_key=True)
+                        path_mutated = True
+                        self._apply_taint(
+                            current_addr,
+                            current_path,
+                            next_state,
+                            taint_key=True
+                        )
             except TimeOutException as to:
                 raise to
             except Exception as e:
                 pass
 
-            if self._is_sink_and_tainted(current_path, next_path):
-                delta_t = time.time() - self._analysis_starting_time
+            #
+            # Keep the historical BugFinder sink abstraction intact.
+            #
+            # _is_sink_and_tainted() records whether an actual sink
+            # handler inspected next_path. Such inspection may trigger
+            # solver/address-concretization side effects, so that
+            # candidate must not be reused for real exploration.
+            #
+            self._successor_sink_handler_ran = False
+
+            sink_tainted = self._is_sink_and_tainted(
+                current_path,
+                next_path
+            )
+
+            if self._successor_sink_handler_ran:
+                successor_side_effect_risk = True
+
+            if sink_tainted:
+                delta_t = (
+                    time.time()
+                    - self._analysis_starting_time
+                )
+
                 self._raised_alert = True
-                name_bin = self._ct.p.loader.main_object.binary
-                log.info("Found a tainted sink! Reporting alert!")
-                self._report_alert_fun('sink', name_bin, current_path, current_addr,
-                                       self._current_role_info[RoleInfo.DATAKEY],
-                                       pl_name=self._current_cpf_name, report_time=delta_t)
+
+                name_bin = (
+                    self._ct.p.loader
+                    .main_object.binary
+                )
+
+                log.info(
+                    "Found a tainted sink! Reporting alert!"
+                )
+
+                self._report_alert_fun(
+                    'sink',
+                    name_bin,
+                    current_path,
+                    current_addr,
+                    self._current_role_info[
+                        RoleInfo.DATAKEY
+                    ],
+                    pl_name=self._current_cpf_name,
+                    report_time=delta_t
+                )
 
             # tainted call address and tainted parameters
             bl = self._current_p.factory.block(current_addr)
             if not len(next_path.active) and len(next_path.unconstrained) and bl.vex.jumpkind == 'Ijk_Call':
+                #
+                # This branch performs taint/memory queries against the
+                # unconstrained successor. Keep those inspection effects
+                # out of the real exploration successor.
+                #
+                successor_side_effect_risk = True
+
                 cap = bl.capstone.insns[-1]
                 vb = bl.vex
                 reg_jump = cap.insn.op_str
@@ -873,7 +982,12 @@ class BugFinder:
                         self._taint_names_applied.append(hash_val)
                         hash_val = self.bv_to_hash(val_jump_reg)
                         self._taint_names_applied.append(hash_val)
-                        self._apply_taint(current_addr, current_path, next_state)
+                        path_mutated = True
+                        self._apply_taint(
+                            current_addr,
+                            current_path,
+                            next_state
+                        )
 
             # eventually if we are in a loop guarded by a tainted variable
             next_active = next_path.active
@@ -921,15 +1035,48 @@ class BugFinder:
                         name_bin = self._ct.p.loader.main_object.binary
                         self._report_alert_fun('loop', name_bin, current_path, current_addr, cond_guard,
                                                pl_name=self._current_cpf_name, report_time=delta_t)
-            # clean up the copied state to prevent possible memory leaks
-            for state in next_path.active + next_path.unconstrained:
-                state.history.trim()
-                state.downsize()
-                state.release_plugin('solver')
+            if (
+                reuse_successor
+                and not path_mutated
+                and not successor_side_effect_risk
+            ):
+                successor_reusable = True
+                return True
+
+            return None
+
         except TimeOutException as to:
             raise to
         except Exception as e:
-            log.error(f"Something went terribly wrong: {str(e)}")
+            log.error(
+                f"Something went terribly wrong: {str(e)}"
+            )
+            return None
+        finally:
+            #
+            # When CoreTaint is going to reuse the preview successor it
+            # owns the path from this point onward. Otherwise this is a
+            # disposable BugFinder preview and we retain the historical
+            # cleanup behavior.
+            #
+            if (
+                next_path is not None
+                and not reuse_successor
+            ):
+                #
+                # Legacy mode: BugFinder created this preview and still
+                # owns its cleanup. In reuse mode CoreTaint owns the
+                # candidate and either keeps or discards it.
+                #
+                for state in (
+                    next_path.active
+                    + next_path.unconstrained
+                ):
+                    state.history.trim()
+                    state.downsize()
+                    state.release_plugin(
+                        'solver'
+                    )
 
     def _is_any_taint_var_bounded(self, guards_info):
         """
